@@ -304,12 +304,12 @@ static void *uart_slave(void *ud)
   
   for(err=0;err>=0;)
   {
-    if(0==slave_sigio) sleep(4);
+    if(0==slave_sigio) sleep(10);
     if(0<slave_sigio)
     {
-      slave_sigio=0;
       // we have something to read
       HAL_UART_Receive(&rbv,&msg);
+      slave_sigio=0;
       if(NULL!=msg)
       {
         printf("%s: msg received: '%s'\n",__func__,msg);

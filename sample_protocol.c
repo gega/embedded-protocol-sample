@@ -720,7 +720,7 @@ int main(int argc, char **argv)
   char fifoname2[64];
   pthread_t t1,t2;
   struct fifos fs;
-  int c;
+  int c,n;
 
   srand(time(NULL));
   
@@ -754,8 +754,16 @@ int main(int argc, char **argv)
   // setup comm env
   temp1d=mkdtemp(temp1);
   temp2d=mkdtemp(temp2);
-  snprintf(fifoname1,sizeof(fifoname1),"%s/uf",temp1d);
-  snprintf(fifoname2,sizeof(fifoname2),"%s/uf",temp1d);
+  if(sizeof(fifoname1)<=(n=snprintf(fifoname1,sizeof(fifoname1),"%s/uf",temp1d)))
+  {
+    fprintf(stderr,"fifoname1[%d] buffer is too small, it would need at least %d bytes\n",sizeof(fifoname1),n+1);
+    exit(1);
+  }
+  if(sizeof(fifoname2)<=(n=snprintf(fifoname2,sizeof(fifoname2),"%s/uf",temp2d)))
+  {
+    fprintf(stderr,"fifoname2[%d] buffer is too small, it would need at least %d bytes\n",sizeof(fifoname2),n+1);
+    exit(1);
+  }
   fs.f1=fifoname1;
   fs.f2=fifoname2;
   mkfifo(fifoname1,0666);

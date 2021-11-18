@@ -1,4 +1,4 @@
-//usr/bin/gcc "$0" -lpthread && exec ./a.out; exit
+//usr/bin/gcc "$0" -lpthread && exec ./a.out "$@"; exit
 /* for very simple code bases a makefile is not necessary. but some compile information
    still useful. for this purpose this is an interesting technique to execute a C source
    file in a unix like environment (after chmod +x)
@@ -124,7 +124,10 @@ static char *errors[]=
   [ERR_TASKNOTFOUND]="task not found",
 };
 
-// protocol buffer size, must be large enough to hold the longest message in the protocol
+/* protocol buffer size, must be large enough to hold the longest message in the protocol
+   (plus the protocol overhead which is defined by mmfl library see the premark[] allocation
+   in the HAL_UART_Transmit() function below)
+*/
 #define BUFSIZE (64)
 
 // transmission simulation: minimum and maximum waiting times between bytes transmitted (unit is us)
@@ -146,13 +149,15 @@ static char *errors[]=
 #define TS2MS(ts) (((ts)->tv_sec*1000L)+(((ts)->tv_nsec/1000000L)))
 
 
-// check if there are the same number of errno enums as the number of strings in the errors[] array
-// if not, perhaps one or more error string(s) are missing and the code will refuse to compile
+/* check if there are the same number of errno enums as the number of strings in the errors[] array
+   if not, perhaps one or more error string(s) are missing and the code will refuse to compile
+*/
 STATIC_ASSERT(SIZEOF_ARR(errors)==ERRCNT,errors_array_and_errnos_enums_should_be_same_length);
 
 
-// https://www.devcoons.com/find-elapsed-time-using-monotonic-clocks-linux/
-// get the time difference between two timespec timestamps
+/* https://www.devcoons.com/find-elapsed-time-using-monotonic-clocks-linux/
+   get the time difference between two timespec timestamps
+*/
 static struct timespec get_elapsed_time(struct timespec* start, struct timespec* stop)
 {
   struct timespec elapsed_time;
@@ -169,26 +174,28 @@ static struct timespec get_elapsed_time(struct timespec* start, struct timespec*
   return elapsed_time;
 }
 
-// simulated uart receiver using mmfl, normally it's triggered by 
-// UART hardware irq
+/* simulated uart receiver using mmfl, normally it's triggered by 
+   UART hardware irq
+*/
 static int HAL_UART_Receive(rb_t *rbv, char **msg)
 {
   char *m=NULL;
   int len;
-  // using mmfl library to do the message framing for us
-  // here we are using the "read" call for reading from 
-  // internal comm buffers, this should be replaced by a 
-  // properly prepared posix compatible read() UART HAL call
-  // (which doesn't have to be complex, it could work in a
-  // minimalistic way when one read()-like call fills only
-  // one byte)
-  // when msg is NULL, a whole message is not received yet,
-  // we need to wait for additional data and call the 
-  // RB_READMSG() again with the same rb_t * context pointer
-  // the subsequent calls are fills the buffer with more data
-  // and when the length is enough for a full message, it will
-  // return with a non-NULL msg pointer and the upper layers
-  // can start processing the newly arrived message
+  /* using mmfl library to do the message framing for us
+     here we are using the "read" call for reading from 
+     internal comm buffers, this should be replaced by a 
+     properly prepared posix compatible read() UART HAL call
+     (which doesn't have to be complex, it could work in a
+     minimalistic way when one read()-like call fills only
+     one byte)
+     when msg is NULL, a whole message is not received yet,
+     we need to wait for additional data and call the 
+     RB_READMSG() again with the same rb_t * context pointer
+     the subsequent calls are fills the buffer with more data
+     and when the length is enough for a full message, it will
+     return with a non-NULL msg pointer and the upper layers
+     can start processing the newly arrived message
+  */
   RB_READMSG(rbv,m,len,read);
   if(NULL!=msg) *msg=m;
   return(len);
@@ -198,53 +205,62 @@ static int HAL_UART_Receive(rb_t *rbv, char **msg)
 static void HAL_UART_Transmit(int fd, char *string)
 {
   int size,i,ps;
-  // This technique is stringification and explained here:
-  // https://gcc.gnu.org/onlinedocs/gcc-3.4.3/cpp/Stringification.html
-  // xstr(INT_MAX) will return the string version of the maximum value
-  // of an int in the current architecture (macro defined in limits.h)
-  // this helps to allocate the minimum size of buffer we need but not
-  // less than that. For the premark (which is message framing dependent
-  // and here it is defined in mmfl.h) we need to allocate one byte for
-  // message start marker, a large enough buffer to store the length of
-  // the message (as ascii integer) and a space which marks the beginning
-  // of the payload.
+  /* This technique is called stringification and explained here:
+     https://gcc.gnu.org/onlinedocs/gcc-3.4.3/cpp/Stringification.html
+     xstr(INT_MAX) will return the string version of the maximum value
+     of an int in the current architecture (macro defined in limits.h)
+     this helps to allocate the minimum size of buffer we need but not
+     less than that. For the premark (which is message framing dependent
+     and here it is defined in mmfl.h) we need to allocate one byte for
+     message start marker, a large enough buffer to store the length of
+     the message (as ascii integer) and a space which marks the beginning
+     of the payload.
+  */
   char premark[]="\n" xstr(INT_MAX) " ";
   char *p;
   
-  // defensive programming with yoda conditions
-  // https://en.wikipedia.org/wiki/Yoda_conditions
+  /* defensive programming with the controversial yoda conditions
+     https://en.wikipedia.org/wiki/Yoda_conditions
+  */
   if(0<=fd&&NULL!=string)
   {
     size=strlen(string);
 
-    // using snprintf() is the best way to prevent buffer overflows when
-    // generating strings to statically allocated buffers. the following
-    // call never overwrites the premark buffer. if the string would be
-    // larger than the buffer size, the string will be truncated and the
-    // return value of snprintf() will be larger or equal than the size 
-    // of the buffer, this is a bug in the code, it should never happen,
-    // as long as the size is "int" and positive. (INT_MIN can overflow 
-    // the buffer as the additional '-' sign adds one more byte, but we
-    // are not planning to handle negative sizes)
+    /* using snprintf() is the best way to prevent buffer overflows when
+       generating strings to statically allocated buffers. the following
+       call never overwrites the premark buffer. if the string would be
+       larger than the buffer size, the string will be truncated and the
+       return value of snprintf() will be larger or equal than the size 
+       of the buffer, this is a bug in the code, it should never happen,
+       as long as the size is "int" and positive. (INT_MIN can overflow 
+       the buffer as the additional '-' sign adds one more byte, but we
+       are not planning to handle negative sizes)
+    */
     ps=snprintf(premark,sizeof(premark),"\n%d ",size);
-    // check if premark truncated, just in case...
+    /* check if premark truncated, just in case... it can only happen if
+       the allocated buffer is too small. Which often indicates that the
+       protocol has been changed and more data need to be allocated.
+    */
     if(ps<sizeof(premark))
     {
       // sending the message out one byte at a time, in order to simulate
       // a slow physical layer
       for(i=0,p=premark;i<(ps+size);i++)
       {
-        // when the premark pointer points to the closing '\0' we can
-        // start sending out the layload bytes
+        /* when the premark pointer points to the closing '\0' we can
+           start sending out the payload bytes
+        */
         if(*p=='\0') write(fd,&string[i-ps],1);
         else write(fd,p++,1);
-        // normally the content of a write will be read by the read on the other side
-        // and this behavior hides the stream nature of the underlying layers
-        // to use one byte writes, sync and delays we are trying to simulate a more
-        // realistic environment where the read on the other side can return in the
-        // middle of a message -- just like it can in real life as well just less often
+        /* Normally the whole data of a write() will be read by the read() on the other
+           side and this behavior covers the stream nature of the underlying layers.
+           The test code uses one byte writes, sync and delays to simulate a more
+           realistic (harsh) environment where the read() on the other side can return in the
+           middle of a message -- just like what rarely can happen in real life too
+        */
         fsync(fd);
-        // wait for a random time to simulate a slow environment
+        /* wait for a random time to simulate a slow environment
+        */
         usleep(MINWAIT_US+rand()%(MAXWAIT_US-MINWAIT_US));
       }
     }
@@ -276,8 +292,9 @@ static void HAL_UART_Transmit(int fd, char *string)
 */
 #define BACKGROUND_TASK_COUNT (3)
 
-// define a simulated random duration interval for the simulated background tasks
-// here the background tasks will take 2 to 8 seconds to complete
+/* define a simulated random duration interval for the simulated background tasks
+   here the background tasks will take 2 to 8 seconds to complete
+*/
 #define SLOW_MIN_DUR_MS (2000)
 #define SLOW_MAX_DUR_MS (8000)
 
@@ -444,8 +461,9 @@ static int cmp_protocol(const void *key, const void *proto)
 */
 void slave_sigio_handler(int sig, siginfo_t *info, void *ucontext)
 {
-  // handler is executed when data became readable on the 
-  // info.si_fd file descriptor
+  /* handler is executed when data became readable on the 
+     info.si_fd file descriptor
+  */
   slave_sigio++;
 }
 
@@ -600,9 +618,10 @@ static void *uart_master(void *ud)
   int fin=open(fs->f2,O_RDWR);
   int fout=open(fs->f1,O_RDWR);
 
-  // mmfl init (buffer doesn't need to be large,
-  // the minimum buffer size is the maximum length
-  // of one valid message)
+  /* mmfl init (buffer doesn't need to be large,
+     the minimum buffer size is the maximum length
+     of the valid messages)
+  */
   RB_INIT(&rbv,buf,sizeof(buf),fin);
   
   // business logic for master -----------------------
@@ -692,7 +711,7 @@ static void *uart_master(void *ud)
 
 
 // wrapper code
-int main(void)
+int main(int argc, char **argv)
 {
   char temp1[]="/tmp/uart1_XXXXXX";
   char temp2[]="/tmp/uart2_XXXXXX";
@@ -701,6 +720,36 @@ int main(void)
   char fifoname2[64];
   pthread_t t1,t2;
   struct fifos fs;
+  int c;
+
+  srand(time(NULL));
+  
+  /* handling command line parameters in the standard way
+  */
+  while(-1!=(c=getopt(argc,argv,"hs:")))
+  {
+    switch(c)
+    {
+      case 'h':
+      {
+        printf("Usage: %s [options]\n -h\thelp\n -s\tseed\n",argv[0]);
+        exit(0);
+      }
+      case 's':
+      {
+        srand(strtol(optarg,NULL,10));
+        break;
+      }
+      case '?':
+      {
+        if('s'==optopt) fprintf(stderr,"Option -%c requires an argument.\n",optopt);
+        else if(isprint(optopt)) fprintf(stderr, "Unknown option `-%c'.\n",optopt);
+        else fprintf(stderr,"Unknown option character `\\x%x'.\n",optopt);
+        exit(1);
+      }
+      default: printf("def\n");
+    }
+  }
   
   // setup comm env
   temp1d=mkdtemp(temp1);

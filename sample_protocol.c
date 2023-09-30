@@ -5,6 +5,37 @@
    more information about this shebang: https://stackoverflow.com/a/29709521
 */
 
+/* protocol design
+
+The main goals for this protocol design are:
+
+- simple implementation
+- extensibility
+- portability and minimal dependency
+- convenient API
+- easy debugging
+- easy HIL integration
+  hardware in the loop: https://en.wikipedia.org/wiki/Hardware-in-the-loop_simulation
+- async processing
+  some operations can be slow and some connection can be slow
+- heap usage should be minimal or zero
+  embedded systems often have limited RAM and/or missing dynamic memory management functions
+
+An usual design decision for protocols like this is to implement them in a state machine. This
+is almost always a mistake. Except for extremely simple cases, the state machine implementation
+usually exponentially growing and quickly became a real pain to work with. The rule of thumb
+here is, that at the point when the coder has the feeling that this if-based state machine would
+be nicer as a switch-based one, than it is the time to rethink the design. Of course there must
+be some state machine in a protocol but that part must be strictly contained and safely removed
+from the main part of the code. Extremely important that the state machine should not depend on
+the loop cycle interval (the time between calling the state advancing code) and ideally it should
+work even when called with random intervals.
+
+Here the state machine is hidden in the mmfl library which is separated and time independent.
+
+*/
+
+
 /* in order to allow the libc library to conform to multiple standards, feature macros
    are introduced to enable/disable certain feature sets of the library. these macros
    should be defined before any system related include files are included.
@@ -51,12 +82,6 @@
 #define VERSION "1.0.3"
 
 
-/* necessary macros for stringification. for details see the 
-   function HAL_UART_Transmit() below
-*/
-#define xstr(s) str(s)
-#define str(s) #s
-
 /* static assert to make sure that some compile time known values are in sync
    in this code it is used to check the number of errors in the errnos enum are the
    same as the number of error strings in the errors array -- so if some forgot to 
@@ -65,6 +90,24 @@
 */
 #define STATIC_ASSERT( condition, name )  typedef char assert_failed_ ## name [ (condition) ? 1 : -1 ];
 
+
+/* These arrays contains the required decimal digits to print the largest positive
+   number for each byte width from 0 to 8. The data can be used to allocate the minimum
+   number of bytes which needed to store a particular string which contains integers.
+   The formula for signed integers is log(2^(x*8-1)-1) which is difficult to generate
+   with the preprocessor. This array can be used to allocate arrays on the stack.
+   The data can be generated in many ways, two examples using bash:
+
+   signed:   $ export BC_LINE_LENGTH=0; echo -n "0"; for((i=1;i<9;i++)) do mx=$(echo "2^($i*(8-1))-1"|bc); echo -n ","${#mx}; done; echo
+   unsigned: $ export BC_LINE_LENGTH=0; echo -n "0"; for((i=1;i<9;i++)) do mx=$(echo "2^($i*(8-0))-1"|bc); echo -n ","${#mx}; done; echo
+   or
+   signed:   $ echo -n 0,;for((i=1;i<9;i++)) do echo "define tr(x){auto s;s=scale;scale=0;x=x/1;scale=s;return x} tr((l(2^(($i*8-1))-1)/l(10))+1)" | bc -l; done |tr '\n' ','
+   unsigned: $ echo -n 0,;for((i=1;i<9;i++)) do echo "define tr(x){auto s;s=scale;scale=0;x=x/1;scale=s;return x} tr((l(2^(($i*8-0))-1)/l(10))+1)" | bc -l; done |tr '\n' ','
+ */
+static const __attribute__((unused)) int signed_max_length[]=  {1,3,5,7,10,12,15,17,19};
+static const __attribute__((unused)) int unsigned_max_length[]={1,3,5,8,10,13,15,17,20};
+#define SIGNED_MAX_CHARS(s) (signed_max_length[(s)]+1) // +1 is for the sign
+#define UNSIGNED_MAX_CHARS(s) (unsigned_max_length[(s)])
 
 /* Extra structure just for the simulation
    holds the two FIFOs for the two directions of the communication
@@ -205,18 +248,7 @@ static int HAL_UART_Receive(rb_t *rbv, char **msg)
 static void HAL_UART_Transmit(int fd, char *string)
 {
   int size,i,ps;
-  /* This technique is called stringification and explained here:
-     https://gcc.gnu.org/onlinedocs/gcc-3.4.3/cpp/Stringification.html
-     xstr(INT_MAX) will return the string version of the maximum value
-     of an int in the current architecture (macro defined in limits.h)
-     this helps to allocate the minimum size of buffer we need but not
-     less than that. For the premark (which is message framing dependent
-     and here it is defined in mmfl.h) we need to allocate one byte for
-     message start marker, a large enough buffer to store the length of
-     the message (as ascii integer) and a space which marks the beginning
-     of the payload.
-  */
-  char premark[]="\n" xstr(INT_MAX) " ";
+  char premark[1+SIGNED_MAX_CHARS(sizeof(int))];
   char *p;
   
   /* defensive programming with the controversial yoda conditions
@@ -756,12 +788,12 @@ int main(int argc, char **argv)
   temp2d=mkdtemp(temp2);
   if(sizeof(fifoname1)<=(n=snprintf(fifoname1,sizeof(fifoname1),"%s/uf",temp1d)))
   {
-    fprintf(stderr,"fifoname1[%d] buffer is too small, it would need at least %d bytes\n",sizeof(fifoname1),n+1);
+    fprintf(stderr,"fifoname1[%ld] buffer is too small, it would need at least %d bytes\n",sizeof(fifoname1),n+1);
     exit(1);
   }
   if(sizeof(fifoname2)<=(n=snprintf(fifoname2,sizeof(fifoname2),"%s/uf",temp2d)))
   {
-    fprintf(stderr,"fifoname2[%d] buffer is too small, it would need at least %d bytes\n",sizeof(fifoname2),n+1);
+    fprintf(stderr,"fifoname2[%ld] buffer is too small, it would need at least %d bytes\n",sizeof(fifoname2),n+1);
     exit(1);
   }
   fs.f1=fifoname1;
